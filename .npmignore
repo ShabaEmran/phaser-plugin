@@ -1,0 +1,12 @@
+/src
+/node_modules
+.parcel-cache
+
+
+package-lock.json
+
+.env
+.DS_Store
+
+
+tsconfig.json

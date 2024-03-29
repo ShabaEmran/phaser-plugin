@@ -1,15 +1,19 @@
 {
   "name": "@playe/phaser-3",
-  "repository": "https://github.com/ShabaEmran/phaser-plugin",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ShabaEmran/phaser-plugin.git"
+  },
   "description": "A Phaser 3 plugin to easily integrate the Playe SDK",
   "version": "0.0.5",
-  "source": "lib/index.js",
-  "main": "dist/phaser-playe.js",
-  "license": "ISC",
+  "source": "src/index.js",
+  "main": "dist/index.js",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "watch": "parcel ./example/index.html",
-    "build-publish": "rm -rf dist && parcel build && yarn publish",
+    "build": "parcel build",
+    "build-publish": "parcel build && npm publish",
     "lint": "standard"
   },
   "dependencies": {
@@ -19,5 +23,8 @@
     "parcel": "^2.8.2",
     "process": "^0.11.10",
     "standard": "^16.0.3"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
