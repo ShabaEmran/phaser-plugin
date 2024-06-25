@@ -49,9 +49,9 @@ export class PlayePlugin extends Plugins.BasePlugin {
     script.setAttribute("type", "text/javascript");
     script.setAttribute("src", "https://dev-playe.s3.us-east-2.amazonaws.com/scripts/v1/playe-sdk.js");
     script.addEventListener("load", async () => {
-      const baseUrl = process.env.NODE_ENV === "production" ? "https://dev.playe.co" : "https://localhost:7232";
+      // const baseUrl = process.env.NODE_ENV === "production" ? "https://dev.playe.co" : "https://localhost:7232";
       this.sdk = new (window as any).Playe.SDK({
-        baseUrl: baseUrl,
+        baseUrl: "https://dev.playe.co",
       });
 
       this.sdk.test();
