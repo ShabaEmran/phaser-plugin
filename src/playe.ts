@@ -16,6 +16,7 @@ export type GameRecord = {
   createdAt: Date;
   updatedAt: Date;
   deletedAt: Date;
+  sessionDuration?: number;
 };
 
 export class PlayePlugin extends Plugins.BasePlugin {
@@ -26,9 +27,15 @@ export class PlayePlugin extends Plugins.BasePlugin {
   private _queue: (() => void)[];
   private _currentScenes: string[];
   public initialized: boolean;
-  public sdk: any; // Replace 'any' with the actual type of the SDK if available
+  public sdk: any;
 
   private _gameRecord: GameRecord | undefined;
+
+  // Session duration tracking variables
+  private _startTime: number | null = null;
+  private _gameDuration: number = 0;
+  private _gameTimer: number | null = null;
+  private _lastSavedDuration: number = 0;
 
   constructor(pluginManager: Plugins.PluginManager) {
     super(pluginManager);
@@ -49,7 +56,6 @@ export class PlayePlugin extends Plugins.BasePlugin {
     script.setAttribute("type", "text/javascript");
     script.setAttribute("src", "https://dev-playe.s3.us-east-2.amazonaws.com/scripts/v1/playe-sdk.js");
     script.addEventListener("load", async () => {
-      // const baseUrl = process.env.NODE_ENV === "production" ? "https://dev-playe-api.playe.co" : "https://localhost:7232";
       this.sdk = new (window as any).Playe.SDK({
         baseUrl: "https://dev-playe-api.playe.co",
       });
@@ -61,13 +67,20 @@ export class PlayePlugin extends Plugins.BasePlugin {
 
       this.initialized = true;
 
-      // this.game.events.emit(EVENT_INITIALIZED, this);
       this._initializeHooks.forEach((f) => f(this));
     });
     script.addEventListener("error", (e: ErrorEvent) => {
       console.error("failed to load PlayeSDK", e);
     });
     document.head.appendChild(script);
+
+    // Add event listeners for session tracking
+    window.addEventListener('beforeunload', () => this.stopGameTimer());
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') {
+        this.sendGameDuration();
+      }
+    });
   }
 
   runWhenInitialized(callback: (plugin: PlayePlugin) => void): void {
@@ -112,6 +125,9 @@ export class PlayePlugin extends Plugins.BasePlugin {
         }
       }
     });
+
+    // Update game duration
+    this.updateGameTimer();
   }
 
   gameLoadingStart(): void {
@@ -134,6 +150,46 @@ export class PlayePlugin extends Plugins.BasePlugin {
     }
   }
 
+
+  // Session duration tracking methods
+  private startGameTimer(): void {
+    this._startTime = Date.now();
+    this._gameTimer = window.setInterval(() => this.updateGameTimer(), 1000);
+  }
+
+  private updateGameTimer(): void {
+    if (this._startTime !== null) {
+      this._gameDuration = Math.floor((Date.now() - this._startTime) / 1000);
+
+      // Periodically save duration (every 10 seconds)
+      if (this._gameDuration % 10 === 0 && this._gameDuration !== this._lastSavedDuration) {
+        this.sendGameDuration();
+        this._lastSavedDuration = this._gameDuration;
+      }
+    }
+  }
+
+  private stopGameTimer(): void {
+    if (this._gameTimer !== null) {
+      clearInterval(this._gameTimer);
+      this._gameTimer = null;
+    }
+    this.sendGameDuration();
+  }
+
+  private sendGameDuration(): void {
+    if (this._gameRecord) {
+      this._gameRecord.sessionDuration = this._gameDuration;
+      if (this._scriptLoaded) {
+        this.sdk.gamePlayFinish(this._gameRecord);
+      } else {
+        this._queue.push(() => {
+          this.sdk.gamePlayFinish(this._gameRecord);
+        });
+      }
+    }
+  }
+
   async gameplayStart() {
     var result = await this.sdk.gamePlayStart()
 
@@ -141,17 +197,19 @@ export class PlayePlugin extends Plugins.BasePlugin {
 
     if (this._scriptLoaded) {
       this._gameRecord = result;
+      this.startGameTimer(); // Start the timer when gameplay starts
     } else {
       this._queue.push(async () => {
         this._gameRecord = result;
+        this.startGameTimer();
       });
     }
   }
 
-
   gamePlayFinish(score: number): void {
     if (this._gameRecord) {
       this._gameRecord.score = score;
+      this._gameRecord.sessionDuration = this._gameDuration; // Include the final duration
 
       if (this._scriptLoaded) {
         this.sdk.gamePlayFinish(this._gameRecord);
@@ -160,12 +218,14 @@ export class PlayePlugin extends Plugins.BasePlugin {
           this.sdk.gamePlayFinish(this._gameRecord);
         });
       }
+      this.stopGameTimer(); // Stop the timer when gameplay finishes
     } else {
       console.error("game record is not set");
     }
   }
 
   gamePlayStop(): void {
+    this.stopGameTimer(); // Stop the timer when gameplay stops
     if (this._scriptLoaded) {
       this.sdk.gamePlayStop();
     } else {
