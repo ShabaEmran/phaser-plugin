@@ -127,25 +127,35 @@ export class PlayePlugin extends Plugins.BasePlugin {
     });
 
     // Update game duration
-    this.updateGameTimer();
+    if (!this.isDemo()) {
+      this.updateGameTimer();
+    }
   }
 
   gameLoadingStart(): void {
     if (this._scriptLoaded) {
-      this.sdk.gameLoadingStart();
+      if (!this.isDemo()) {
+        this.sdk.gameLoadingStart();
+      }
     } else {
       this._queue.push(() => {
-        this.sdk.gameLoadingStart();
+        if (!this.isDemo()) {
+          this.sdk.gameLoadingStart();
+        }
       });
     }
   }
 
   gameLoadingFinished(): void {
     if (this._scriptLoaded) {
-      this.sdk.gameLoadingFinished();
+      if (!this.isDemo()) {
+        this.sdk.gameLoadingFinished();
+      }
     } else {
       this._queue.push(() => {
-        this.sdk.gameLoadingFinished();
+        if (!this.isDemo()) {
+          this.sdk.gameLoadingFinished();
+        }
       });
     }
   }
@@ -153,12 +163,14 @@ export class PlayePlugin extends Plugins.BasePlugin {
 
   // Session duration tracking methods
   private startGameTimer(): void {
-    this._startTime = Date.now();
-    this._gameTimer = window.setInterval(() => this.updateGameTimer(), 1000);
+    if (!this.isDemo()) {
+      this._startTime = Date.now();
+      this._gameTimer = window.setInterval(() => this.updateGameTimer(), 1000);
+    }
   }
 
   private updateGameTimer(): void {
-    if (this._startTime !== null) {
+    if (!this.isDemo() && this._startTime !== null) {
       this._gameDuration = Math.floor((Date.now() - this._startTime) / 1000);
 
       // Periodically save duration (every 10 seconds)
@@ -170,15 +182,17 @@ export class PlayePlugin extends Plugins.BasePlugin {
   }
 
   private stopGameTimer(): void {
-    if (this._gameTimer !== null) {
-      clearInterval(this._gameTimer);
-      this._gameTimer = null;
+    if (!this.isDemo()) {
+      if (this._gameTimer !== null) {
+        clearInterval(this._gameTimer);
+        this._gameTimer = null;
+      }
+      this.sendGameDuration();
     }
-    this.sendGameDuration();
   }
 
   private sendGameDuration(): void {
-    if (this._gameRecord) {
+    if (!this.isDemo() && this._gameRecord) {
       this._gameRecord.sessionDuration = this._gameDuration;
       if (this._scriptLoaded) {
         this.sdk.gamePlayFinish(this._gameRecord);
@@ -191,47 +205,57 @@ export class PlayePlugin extends Plugins.BasePlugin {
   }
 
   async gameplayStart() {
-    var result = await this.sdk.gamePlayStart()
+    if (!this.isDemo()) {
+      var result = await this.sdk.gamePlayStart()
 
-    console.log("GameRecord", result);
+      console.log("GameRecord", result);
 
-    if (this._scriptLoaded) {
-      this._gameRecord = result;
-      this.startGameTimer(); // Start the timer when gameplay starts
-    } else {
-      this._queue.push(async () => {
+      if (this._scriptLoaded) {
         this._gameRecord = result;
-        this.startGameTimer();
-      });
+        this.startGameTimer(); // Start the timer when gameplay starts
+      } else {
+        this._queue.push(async () => {
+          this._gameRecord = result;
+          this.startGameTimer();
+        });
+      }
     }
   }
 
-  gamePlayFinish(score: number): void {
-    if (this._gameRecord) {
-      this._gameRecord.score = score;
-      this._gameRecord.sessionDuration = this._gameDuration; // Include the final duration
+  private isDemo(): boolean {
+    return this.sdk && this.sdk.isDemo();
+  }
 
-      if (this._scriptLoaded) {
-        this.sdk.gamePlayFinish(this._gameRecord);
-      } else {
-        this._queue.push(() => {
+  gamePlayFinish(score: number): void {
+    if (!this.isDemo()) {
+      if (this._gameRecord) {
+        this._gameRecord.score = score;
+        this._gameRecord.sessionDuration = this._gameDuration; // Include the final duration
+
+        if (this._scriptLoaded) {
           this.sdk.gamePlayFinish(this._gameRecord);
-        });
+        } else {
+          this._queue.push(() => {
+            this.sdk.gamePlayFinish(this._gameRecord);
+          });
+        }
+        this.stopGameTimer(); // Stop the timer when gameplay finishes
+      } else {
+        console.error("game record is not set");
       }
-      this.stopGameTimer(); // Stop the timer when gameplay finishes
-    } else {
-      console.error("game record is not set");
     }
   }
 
   gamePlayStop(): void {
-    this.stopGameTimer(); // Stop the timer when gameplay stops
-    if (this._scriptLoaded) {
-      this.sdk.gamePlayStop();
-    } else {
-      this._queue.push(() => {
+    if (!this.isDemo()) {
+      this.stopGameTimer(); // Stop the timer when gameplay stops
+      if (this._scriptLoaded) {
         this.sdk.gamePlayStop();
-      });
+      } else {
+        this._queue.push(() => {
+          this.sdk.gamePlayStop();
+        });
+      }
     }
   }
 }
