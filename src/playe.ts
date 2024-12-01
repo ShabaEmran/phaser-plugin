@@ -1,23 +1,5 @@
 import { Plugins, Scene } from "phaser";
-
-export const EVENT_INITIALIZED = "playe:initialized";
-
-export type GameRecord = {
-  id: string;
-  gameId: string;
-  gameVersion: string;
-  score: number;
-  playerId: string;
-  sessionId: string;
-  campaignId: string | null;
-  hostedGameId: string | null;
-  createdBy: string;
-  updatedBy: string;
-  createdAt: Date;
-  updatedAt: Date;
-  deletedAt: Date;
-  sessionDuration?: number;
-};
+import { GameSession } from "./types";
 
 export class PlayePlugin extends Plugins.BasePlugin {
   private _loadingSceneKey: string | undefined;
@@ -29,7 +11,7 @@ export class PlayePlugin extends Plugins.BasePlugin {
   public initialized: boolean;
   public sdk: any;
 
-  private _gameRecord: GameRecord | undefined;
+  private _gameSession: GameSession | undefined;
 
   // Session duration tracking variables
   private _startTime: number | null = null;
@@ -45,7 +27,7 @@ export class PlayePlugin extends Plugins.BasePlugin {
     this._currentScenes = [];
     this.initialized = false;
 
-    this._gameRecord = undefined;
+    this._gameSession = undefined;
   }
 
   init({ loadingSceneKey, gameplaySceneKey }: { loadingSceneKey: string; gameplaySceneKey: string }): void {
@@ -192,13 +174,13 @@ export class PlayePlugin extends Plugins.BasePlugin {
   }
 
   private sendGameDuration(): void {
-    if (!this.isDemo() && this._gameRecord) {
-      this._gameRecord.sessionDuration = this._gameDuration;
+    if (!this.isDemo() && this._gameSession) {
+      this._gameSession.sessionDuration = this._gameDuration;
       if (this._scriptLoaded) {
-        this.sdk.gamePlayFinish(this._gameRecord);
+        this.sdk.gamePlayFinish(this._gameSession);
       } else {
         this._queue.push(() => {
-          this.sdk.gamePlayFinish(this._gameRecord);
+          this.sdk.gamePlayFinish(this._gameSession);
         });
       }
     }
@@ -211,11 +193,11 @@ export class PlayePlugin extends Plugins.BasePlugin {
       console.log("GameRecord", result);
 
       if (this._scriptLoaded) {
-        this._gameRecord = result;
+        this._gameSession = result;
         this.startGameTimer(); // Start the timer when gameplay starts
       } else {
         this._queue.push(async () => {
-          this._gameRecord = result;
+          this._gameSession = result;
           this.startGameTimer();
         });
       }
@@ -226,17 +208,20 @@ export class PlayePlugin extends Plugins.BasePlugin {
     return this.sdk && this.sdk.isDemo();
   }
 
-  gamePlayFinish(score: number): void {
+  gamePlayFinish(score: number, email: string): void {
     if (!this.isDemo()) {
-      if (this._gameRecord) {
-        this._gameRecord.score = score;
-        this._gameRecord.sessionDuration = this._gameDuration; // Include the final duration
+      if (this._gameSession) {
+        this._gameSession.score = score;
+        this._gameSession.sessionDuration = this._gameDuration; // Include the final duration
+        this._gameSession.updatedAt = new Date();
+        this._gameSession.updatedBy = email;
+        this._gameSession.playerId = email;
 
         if (this._scriptLoaded) {
-          this.sdk.gamePlayFinish(this._gameRecord);
+          this.sdk.gamePlayFinish(this._gameSession);
         } else {
           this._queue.push(() => {
-            this.sdk.gamePlayFinish(this._gameRecord);
+            this.sdk.gamePlayFinish(this._gameSession);
           });
         }
         this.stopGameTimer(); // Stop the timer when gameplay finishes
