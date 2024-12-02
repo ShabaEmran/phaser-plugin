@@ -1,66 +1,71 @@
 import { Plugins, Scene } from "phaser";
 import { GameSession } from "./types";
+import { PlayeSDK, SDKConfig } from "./types/sdk";
+import { SessionTimer } from "./session-timer";
 
 export class PlayePlugin extends Plugins.BasePlugin {
-  private _loadingSceneKey: string | undefined;
-  private _gameplaySceneKey: string | undefined;
-  private _scriptLoaded: boolean;
-  private _initializeHooks: ((plugin: PlayePlugin) => void)[];
-  private _queue: (() => void)[];
-  private _currentScenes: string[];
-  public initialized: boolean;
-  public sdk: any;
+  private readonly SAVE_INTERVAL_MS = 10000; // 10 seconds
+  private loadingSceneKey?: string;
+  private gameplaySceneKey?: string;
+  private isScriptLoaded = false;
+  private initializeHooks: ((plugin: PlayePlugin) => void)[] = [];
+  private commandQueue: (() => void)[] = [];
+  private activeScenes: string[] = [];
+  private gameSession?: GameSession;
+  private sessionTimer: SessionTimer;
 
-  private _gameSession: GameSession | undefined;
-
-  // Session duration tracking variables
-  private _startTime: number | null = null;
-  private _gameDuration: number = 0;
-  private _gameTimer: number | null = null;
-  private _lastSavedDuration: number = 0;
+  public initialized = false;
+  public sdk!: PlayeSDK;
 
   constructor(pluginManager: Plugins.PluginManager) {
     super(pluginManager);
-    this._scriptLoaded = false;
-    this._initializeHooks = [];
-    this._queue = [];
-    this._currentScenes = [];
-    this.initialized = false;
-
-    this._gameSession = undefined;
+    this.sessionTimer = new SessionTimer();
   }
 
-  init({ loadingSceneKey, gameplaySceneKey }: { loadingSceneKey: string; gameplaySceneKey: string }): void {
-    this._loadingSceneKey = loadingSceneKey;
-    this._gameplaySceneKey = gameplaySceneKey;
+  init({ loadingSceneKey, gameplaySceneKey }: GamePluginConfig): void {
+    this.loadingSceneKey = loadingSceneKey;
+    this.gameplaySceneKey = gameplaySceneKey;
+    this.initializeSDK();
+    this.setupEventListeners();
+  }
 
-    const script = document.createElement("script");
-    script.setAttribute("type", "text/javascript");
-    script.setAttribute("src", "https://dev-playe.s3.us-east-2.amazonaws.com/scripts/v1/playe-sdk.js");
-    script.addEventListener("load", async () => {
-      this.sdk = new (window as any).Playe.SDK({
-        baseUrl: "https://dev-playe-api.playe.co",
-      });
-
-      this.sdk.test();
-
-      this._scriptLoaded = true;
-      this._queue.forEach((f) => f());
-
-      this.initialized = true;
-
-      this._initializeHooks.forEach((f) => f(this));
-    });
-    script.addEventListener("error", (e: ErrorEvent) => {
-      console.error("failed to load PlayeSDK", e);
-    });
+  private initializeSDK(): void {
+    const script = this.createSDKScript();
+    script.addEventListener("load", this.handleScriptLoad.bind(this));
+    script.addEventListener("error", this.handleScriptError);
     document.head.appendChild(script);
+  }
 
-    // Add event listeners for session tracking
-    window.addEventListener('beforeunload', () => this.stopGameTimer());
+  private createSDKScript(): HTMLScriptElement {
+    const script = document.createElement("script");
+    script.type = "text/javascript";
+    script.src = "https://dev-playe.s3.us-east-2.amazonaws.com/scripts/v1/playe-sdk.js";
+    return script;
+  }
+
+  private async handleScriptLoad(): Promise<void> {
+    const sdkConfig: SDKConfig = {
+      baseUrl: "https://localhost:7232"
+    };
+
+    this.sdk = new window.Playe.SDK(sdkConfig);
+
+    this.sdk.test();
+    this.isScriptLoaded = true;
+    this.executeQueuedCommands();
+    this.initialized = true;
+    this.notifyInitializeHooks();
+  }
+
+  private handleScriptError(error: ErrorEvent): void {
+    console.error("Failed to load PlayeSDK:", error);
+  }
+
+  private setupEventListeners(): void {
+    window.addEventListener('beforeunload', () => this.sessionTimer.stop());
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') {
-        this.sendGameDuration();
+        this.saveSessionDuration();
       }
     });
   }
@@ -69,178 +74,165 @@ export class PlayePlugin extends Plugins.BasePlugin {
     if (this.initialized) {
       callback(this);
     } else {
-      this._initializeHooks.push(callback);
+      this.initializeHooks.push(callback);
     }
   }
 
-  // Called by Phaser, do not use
   start(): void {
-    this.game.events.on("step", this._update, this);
+    this.game.events.on("step", this.update, this);
   }
 
-  // Called by Phaser, do not use
   stop(): void {
-    this.game.events.off("step", this._update);
+    this.game.events.off("step", this.update);
   }
 
-  private _update(): void {
-    const names = this.game.scene.getScenes(true).map((s: Scene) => s.constructor.name);
-    this._currentScenes.forEach((name) => {
-      if (names.indexOf(name) === -1) {
-        this._currentScenes.splice(this._currentScenes.indexOf(name), 1);
-        if (name === this._loadingSceneKey) {
-          this.gameLoadingFinished();
-        }
-        if (name === this._gameplaySceneKey) {
-          this.gamePlayStop();
-        }
-      }
-    });
-    names.forEach(async (name) => {
-      if (this._currentScenes.indexOf(name) === -1) {
-        this._currentScenes.push(name);
-        if (name === this._loadingSceneKey) {
-          this.gameLoadingStart();
-        }
-        if (name === this._gameplaySceneKey) {
-          await this.gameplayStart();
-        }
-      }
-    });
+  private update(): void {
+    const currentScenes = this.game.scene.getScenes(true).map((s: Scene) => s.constructor.name);
+    this.handleSceneChanges(currentScenes);
 
-    // Update game duration
     if (!this.isDemo()) {
-      this.updateGameTimer();
+      this.sessionTimer.update();
+    }
+  }
+
+  private handleSceneChanges(currentScenes: string[]): void {
+    this.handleRemovedScenes(currentScenes);
+    this.handleNewScenes(currentScenes);
+  }
+
+  private handleRemovedScenes(currentScenes: string[]): void {
+    this.activeScenes = this.activeScenes.filter(name => {
+      if (!currentScenes.includes(name)) {
+        this.handleSceneRemoval(name);
+        return false;
+      }
+      return true;
+    });
+  }
+
+  private handleSceneRemoval(sceneName: string): void {
+    if (sceneName === this.loadingSceneKey) {
+      this.gameLoadingFinished();
+    } else if (sceneName === this.gameplaySceneKey) {
+      this.gamePlayStop();
+    }
+  }
+
+  private handleNewScenes(currentScenes: string[]): void {
+    currentScenes.forEach(async (name) => {
+      if (!this.activeScenes.includes(name)) {
+        this.activeScenes.push(name);
+        await this.handleNewScene(name);
+      }
+    });
+  }
+
+  private async handleNewScene(sceneName: string): Promise<void> {
+    if (sceneName === this.loadingSceneKey) {
+      this.gameLoadingStart();
+    } else if (sceneName === this.gameplaySceneKey) {
+      await this.gameplayStart();
+    }
+  }
+
+  private executeCommand(command: () => void): void {
+    if (this.isScriptLoaded) {
+      command();
+    } else {
+      this.commandQueue.push(command);
+    }
+  }
+
+  private executeQueuedCommands(): void {
+    this.commandQueue.forEach(command => command());
+    this.commandQueue = [];
+  }
+
+  private notifyInitializeHooks(): void {
+    this.initializeHooks.forEach(hook => hook(this));
+  }
+
+  private saveSessionDuration(): void {
+    if (!this.isDemo() && this.gameSession) {
+      this.gameSession.sessionDuration = this.sessionTimer.getDuration();
+      this.executeCommand(() => {
+        if (this.gameSession) {
+          if (this.gameSession) {
+            this.sdk.updateGameSession(this.gameSession);
+          } else {
+            console.error("Game session is not initialized");
+          }
+        } else {
+          console.error("Game session is not initialized");
+        }
+      });
     }
   }
 
   gameLoadingStart(): void {
-    if (this._scriptLoaded) {
-      if (!this.isDemo()) {
-        this.sdk.gameLoadingStart();
-      }
-    } else {
-      this._queue.push(() => {
-        if (!this.isDemo()) {
-          this.sdk.gameLoadingStart();
-        }
-      });
+    if (!this.isDemo()) {
+      this.executeCommand(() => this.sdk.gameLoadingStart());
     }
   }
 
   gameLoadingFinished(): void {
-    if (this._scriptLoaded) {
-      if (!this.isDemo()) {
-        this.sdk.gameLoadingFinished();
-      }
-    } else {
-      this._queue.push(() => {
-        if (!this.isDemo()) {
-          this.sdk.gameLoadingFinished();
-        }
+    if (!this.isDemo()) {
+      this.executeCommand(() => this.sdk.gameLoadingFinished());
+    }
+  }
+
+  async gameplayStart(): Promise<void> {
+    if (!this.isDemo()) {
+      const result = await this.sdk.getGameSession();
+      console.log("GameSession:", result);
+
+      this.executeCommand(() => {
+        this.gameSession = result;
+        this.sessionTimer.start();
       });
     }
   }
 
+  gamePlayFinish(score: number, email: string): void {
+    if (!this.isDemo() && this.gameSession) {
+      this.updateGameSession(score, email);
+      this.executeCommand(() => {
+        if (this.gameSession) {
+          this.sdk.updateGameSession(this.gameSession);
+        } else {
+          console.error("Game session is not initialized");
+        }
+      });
+      this.sessionTimer.stop();
+    } else {
+      console.error("Game session is not initialized");
+    }
+  }
 
-  // Session duration tracking methods
-  private startGameTimer(): void {
+  private updateGameSession(score: number, email: string): void {
+    if (this.gameSession) {
+      this.gameSession.score = score;
+      this.gameSession.sessionDuration = this.sessionTimer.getDuration();
+      this.gameSession.updatedAt = new Date();
+      this.gameSession.updatedBy = email;
+      this.gameSession.playerId = email;
+      this.gameSession.email = email;
+    }
+  }
+
+  gamePlayStop(): void {
     if (!this.isDemo()) {
-      this._startTime = Date.now();
-      this._gameTimer = window.setInterval(() => this.updateGameTimer(), 1000);
-    }
-  }
-
-  private updateGameTimer(): void {
-    if (!this.isDemo() && this._startTime !== null) {
-      this._gameDuration = Math.floor((Date.now() - this._startTime) / 1000);
-
-      // Periodically save duration (every 10 seconds)
-      if (this._gameDuration % 10 === 0 && this._gameDuration !== this._lastSavedDuration) {
-        this.sendGameDuration();
-        this._lastSavedDuration = this._gameDuration;
-      }
-    }
-  }
-
-  private stopGameTimer(): void {
-    if (!this.isDemo()) {
-      if (this._gameTimer !== null) {
-        clearInterval(this._gameTimer);
-        this._gameTimer = null;
-      }
-      this.sendGameDuration();
-    }
-  }
-
-  private sendGameDuration(): void {
-    if (!this.isDemo() && this._gameSession) {
-      this._gameSession.sessionDuration = this._gameDuration;
-      if (this._scriptLoaded) {
-        this.sdk.gamePlayFinish(this._gameSession);
-      } else {
-        this._queue.push(() => {
-          this.sdk.gamePlayFinish(this._gameSession);
-        });
-      }
-    }
-  }
-
-  async gameplayStart() {
-    if (!this.isDemo()) {
-      var result = await this.sdk.gamePlayStart()
-
-      console.log("GameRecord", result);
-
-      if (this._scriptLoaded) {
-        this._gameSession = result;
-        this.startGameTimer(); // Start the timer when gameplay starts
-      } else {
-        this._queue.push(async () => {
-          this._gameSession = result;
-          this.startGameTimer();
-        });
-      }
+      this.sessionTimer.stop();
+      this.executeCommand(() => this.sdk.gamePlayStop());
     }
   }
 
   private isDemo(): boolean {
     return this.sdk && this.sdk.isDemo();
   }
+}
 
-  gamePlayFinish(score: number, email: string): void {
-    if (!this.isDemo()) {
-      if (this._gameSession) {
-        this._gameSession.score = score;
-        this._gameSession.sessionDuration = this._gameDuration; // Include the final duration
-        this._gameSession.updatedAt = new Date();
-        this._gameSession.updatedBy = email;
-        this._gameSession.playerId = email;
-
-        if (this._scriptLoaded) {
-          this.sdk.gamePlayFinish(this._gameSession);
-        } else {
-          this._queue.push(() => {
-            this.sdk.gamePlayFinish(this._gameSession);
-          });
-        }
-        this.stopGameTimer(); // Stop the timer when gameplay finishes
-      } else {
-        console.error("game record is not set");
-      }
-    }
-  }
-
-  gamePlayStop(): void {
-    if (!this.isDemo()) {
-      this.stopGameTimer(); // Stop the timer when gameplay stops
-      if (this._scriptLoaded) {
-        this.sdk.gamePlayStop();
-      } else {
-        this._queue.push(() => {
-          this.sdk.gamePlayStop();
-        });
-      }
-    }
-  }
+interface GamePluginConfig {
+  loadingSceneKey: string;
+  gameplaySceneKey: string;
 }
