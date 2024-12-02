@@ -45,7 +45,7 @@ export class PlayePlugin extends Plugins.BasePlugin {
 
   private async handleScriptLoad(): Promise<void> {
     const sdkConfig: SDKConfig = {
-      baseUrl: "https://localhost:7232"
+      baseUrl: "https://dev-playe-api.playe.co",
     };
 
     this.sdk = new window.Playe.SDK(sdkConfig);
