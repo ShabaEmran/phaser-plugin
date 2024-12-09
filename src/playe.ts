@@ -45,7 +45,7 @@ export class PlayePlugin extends Plugins.BasePlugin {
 
   private async handleScriptLoad(): Promise<void> {
     const sdkConfig: SDKConfig = {
-      baseUrl: "https://localhost:7232",
+      baseUrl: "https://dev-playe-api.playe.co",
     };
 
     this.sdk = new window.Playe.SDK(sdkConfig);
@@ -62,9 +62,14 @@ export class PlayePlugin extends Plugins.BasePlugin {
   }
 
   private setupEventListeners(): void {
-    window.addEventListener('beforeunload', () => this.sessionTimer.stop());
+    window.addEventListener('beforeunload', () => {
+      if (!this.isGameFinished()) {
+        this.sessionTimer.stop();
+      }
+    });
+
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'hidden') {
+      if (document.visibilityState === 'hidden' && !this.isGameFinished()) {
         this.saveSessionDuration();
       }
     });
@@ -90,7 +95,8 @@ export class PlayePlugin extends Plugins.BasePlugin {
     const currentScenes = this.game.scene.getScenes(true).map((s: Scene) => s.constructor.name);
     this.handleSceneChanges(currentScenes);
 
-    if (!this.isDemo()) {
+    // Only update session timer if game is not finished and not in demo mode
+    if (!this.isDemo() && !this.isGameFinished()) {
       this.sessionTimer.update();
     }
   }
@@ -153,20 +159,21 @@ export class PlayePlugin extends Plugins.BasePlugin {
   }
 
   private saveSessionDuration(): void {
-    if (!this.isDemo() && this.gameSession) {
+    if (!this.isDemo() && this.gameSession && !this.isGameFinished()) {
       this.gameSession.sessionDuration = this.sessionTimer.getDuration();
       this.executeCommand(() => {
         if (this.gameSession) {
-          if (this.gameSession) {
-            this.sdk.updateGameSession(this.gameSession);
-          } else {
-            console.error("Game session is not initialized");
-          }
+          this.sdk.updateGameSession(this.gameSession);
         } else {
           console.error("Game session is not initialized");
         }
       });
     }
+  }
+
+  // Helper method to check if the game is finished
+  private isGameFinished(): boolean {
+    return this.gameSession?.isCompleted ?? false;
   }
 
   gameLoadingStart(): void {
@@ -193,6 +200,14 @@ export class PlayePlugin extends Plugins.BasePlugin {
     }
   }
 
+  // Reset all state and prepare for a new game session
+  private resetGameState(): void {
+    this.sessionTimer.stop();
+    this.sessionTimer = new SessionTimer();
+    this.gameSession = undefined;
+    this.activeScenes = [];
+  }
+
   gamePlayFinish(score: number, email: string): void {
     if (!this.isDemo() && this.gameSession) {
       this.finalizeGameSession(score, email);
@@ -200,15 +215,12 @@ export class PlayePlugin extends Plugins.BasePlugin {
         if (this.gameSession) {
           this.sdk.updateGameSession({
             ...this.gameSession,
-            isCompleted: true, // Mark the game session as completed
+            isCompleted: true,
           });
-        } else {
-          console.error("Game session is not initialized");
         }
       });
-      this.sessionTimer.stop();
-    } else {
-      console.error("Game session is not initialized");
+      // Reset all state after finishing
+      this.resetGameState();
     }
   }
 
@@ -224,9 +236,24 @@ export class PlayePlugin extends Plugins.BasePlugin {
   }
 
   gamePlayStop(): void {
-    if (!this.isDemo()) {
+    if (!this.isDemo() && !this.isGameFinished()) {
       this.sessionTimer.stop();
       this.executeCommand(() => this.sdk.gamePlayStop());
+    }
+  }
+
+  // New method to handle play again functionality
+  async playAgain(): Promise<void> {
+    if (!this.isDemo()) {
+      // Reset all state
+      this.resetGameState();
+
+      // Start a new game session
+      await this.gameplayStart();
+
+      // Notify the SDK that we're starting a new game
+      this.executeCommand(() => this.sdk.gamePlayStop());
+      this.gameLoadingStart();
     }
   }
 
