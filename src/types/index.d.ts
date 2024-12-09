@@ -20,6 +20,7 @@ export interface GameSession {
     totalAmount: number;
     gamepassDeducted: boolean;
     heartbeatCount: number;
+    isCompleted: boolean; // only for frontend
     createdBy: string;
     updatedBy: string;
     createdAt: Date;

@@ -45,7 +45,7 @@ export class PlayePlugin extends Plugins.BasePlugin {
 
   private async handleScriptLoad(): Promise<void> {
     const sdkConfig: SDKConfig = {
-      baseUrl: "https://dev-playe-api.playe.co",
+      baseUrl: "https://localhost:7232",
     };
 
     this.sdk = new window.Playe.SDK(sdkConfig);
@@ -195,10 +195,13 @@ export class PlayePlugin extends Plugins.BasePlugin {
 
   gamePlayFinish(score: number, email: string): void {
     if (!this.isDemo() && this.gameSession) {
-      this.updateGameSession(score, email);
+      this.finalizeGameSession(score, email);
       this.executeCommand(() => {
         if (this.gameSession) {
-          this.sdk.updateGameSession(this.gameSession);
+          this.sdk.updateGameSession({
+            ...this.gameSession,
+            isCompleted: true, // Mark the game session as completed
+          });
         } else {
           console.error("Game session is not initialized");
         }
@@ -209,7 +212,7 @@ export class PlayePlugin extends Plugins.BasePlugin {
     }
   }
 
-  private updateGameSession(score: number, email: string): void {
+  private finalizeGameSession(score: number, email: string): void {
     if (this.gameSession) {
       this.gameSession.score = score;
       this.gameSession.sessionDuration = this.sessionTimer.getDuration();
